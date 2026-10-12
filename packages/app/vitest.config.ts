@@ -3,6 +3,9 @@ import { playwright } from "@vitest/browser-playwright";
 import path from "path";
 import fs from "fs";
 
+// Set this before Vite resolves dependencies and Vitest starts its workers.
+Object.assign(process.env, { NODE_ENV: "test" });
+
 const appNodeModules = path.resolve(__dirname, "node_modules");
 const rootNodeModules = path.resolve(__dirname, "../../node_modules");
 const resolvePackageEntry = (packageName: string) => {
@@ -22,7 +25,12 @@ export default defineConfig({
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.{test,spec}.{ts,tsx}", "native-release-version.test.ts"],
+          include: [
+            "src/**/*.{test,spec}.{ts,tsx}",
+            "native-release-version.test.ts",
+            "app.config.test.ts",
+            "vitest-environment.test.ts",
+          ],
           setupFiles: [path.resolve(__dirname, "vitest.setup.ts")],
           exclude: [...configDefaults.exclude, "e2e/**", "src/**/*.browser.{test,spec}.{ts,tsx}"],
         },
@@ -184,6 +192,12 @@ export default defineConfig({
       {
         find: /^expo-linking$/,
         replacement: path.resolve(__dirname, "test-stubs/expo-linking.ts"),
+      },
+      // No Node implementation: every call on the real module rejects, so a test
+      // touching a persisted store drowns in unhandled rejections.
+      {
+        find: /^@react-native-async-storage\/async-storage$/,
+        replacement: path.resolve(__dirname, "test-stubs/async-storage.ts"),
       },
       {
         find: /^lucide-react-native$/,
