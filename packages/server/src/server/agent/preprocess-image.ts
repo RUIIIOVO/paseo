@@ -40,7 +40,11 @@ import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { PhotonImage } from "@silvia-odwyer/photon-node";
 import type { Logger } from "pino";
 import { applyExifOrientation } from "./exif-orientation.js";
-import { readImageDimensions, type ImageDimensions } from "./image-dimensions.js";
+import {
+  isAnimatedContainer,
+  readImageDimensions,
+  type ImageDimensions,
+} from "./image-dimensions.js";
 
 type Photon = typeof import("@silvia-odwyer/photon-node");
 
@@ -168,15 +172,21 @@ export class TooManyImagesError extends Error {
 /**
  * Formats this path must never re-encode.
  *
- * GIF may be animated and re-encoding flattens it to a single frame; SVG is
+ * GIF and animated WebP lose every frame but the first when re-encoded; SVG is
  * vector and has no pixels to scale. That removes the clamp as an option, not
  * the limits: one of these is still measured against the same ceilings, and one
  * that is over them fails the send rather than being forwarded.
+ *
+ * The MIME type is the client's claim, so the bytes are checked too: a GIF
+ * labelled `image/png` is still a GIF.
  */
 const PASSTHROUGH_MIME_TYPES = new Set(["image/gif", "image/svg+xml"]);
 
-function isPassthrough(mimeType: string): boolean {
-  return PASSTHROUGH_MIME_TYPES.has(mimeType.split(";")[0]!.trim().toLowerCase());
+function isPassthrough(mimeType: string, bytes: Uint8Array): boolean {
+  return (
+    PASSTHROUGH_MIME_TYPES.has(mimeType.split(";")[0]!.trim().toLowerCase()) ||
+    isAnimatedContainer(bytes)
+  );
 }
 
 let photonLoad: Promise<Photon> | undefined;
@@ -205,19 +215,26 @@ interface Encoded {
   mimeType: string;
 }
 
-/** PNG first, then the JPEG ladder; the first under budget wins. */
-function encodeWithinBudget(image: PhotonImage, maxBytes: number): Encoded | null {
+type EncodeAttempt = { fits: true; encoded: Encoded } | { fits: false; smallest: Encoded };
+
+/**
+ * PNG first, then the JPEG ladder; the first under budget wins. When none
+ * fits, the bottom of the ladder is returned so the caller does not encode it a
+ * second time.
+ */
+function encodeWithinBudget(image: PhotonImage, maxBytes: number): EncodeAttempt {
   const png = image.get_bytes();
   if (base64Length(png.byteLength) <= maxBytes) {
-    return { bytes: png, mimeType: "image/png" };
+    return { fits: true, encoded: { bytes: png, mimeType: "image/png" } };
   }
+  let jpeg: Uint8Array | undefined;
   for (const quality of JPEG_QUALITIES) {
-    const jpeg = image.get_bytes_jpeg(quality);
+    jpeg = image.get_bytes_jpeg(quality);
     if (base64Length(jpeg.byteLength) <= maxBytes) {
-      return { bytes: jpeg, mimeType: "image/jpeg" };
+      return { fits: true, encoded: { bytes: jpeg, mimeType: "image/jpeg" } };
     }
   }
-  return null;
+  return { fits: false, smallest: { bytes: jpeg!, mimeType: "image/jpeg" } };
 }
 
 function fitWithin(width: number, height: number, max: number): [number, number] {
@@ -246,39 +263,50 @@ interface ClampToBudgetOptions {
  * makes budget or the readability floor is reached. Past the floor the
  * smallest JPEG produced is sent anyway: still bounded in pixels, which is the
  * ceiling that poisons a session.
+ *
+ * Each step resizes the previous step's output, not the source. Resampling
+ * cost follows the input size, so going back to a 50MP source on every step
+ * would multiply the slowest part of this path by the number of steps; a
+ * 0.75x Lanczos step from an image already at most 2000px costs little and
+ * loses nothing visible.
  */
 function clampToBudget(options: ClampToBudgetOptions): Clamped {
   const { photon, decoded, maxBytes, logger } = options;
   let [targetWidth, targetHeight] = options.target;
   let smallest: Clamped | undefined;
-  for (;;) {
-    const scaled = photon.resize(
-      decoded,
-      targetWidth,
-      targetHeight,
-      photon.SamplingFilter.Lanczos3,
-    );
-    try {
+  let source = decoded;
+  try {
+    for (;;) {
+      const scaled =
+        source.get_width() === targetWidth && source.get_height() === targetHeight
+          ? source
+          : photon.resize(source, targetWidth, targetHeight, photon.SamplingFilter.Lanczos3);
+      if (source !== decoded && source !== scaled) {
+        source.free();
+      }
+      source = scaled;
       const width = scaled.get_width();
       const height = scaled.get_height();
-      const encoded = encodeWithinBudget(scaled, maxBytes);
-      if (encoded) {
-        return { ...encoded, width, height };
+      const attempt = encodeWithinBudget(scaled, maxBytes);
+      if (attempt.fits) {
+        return { ...attempt.encoded, width, height };
       }
-      const jpeg = scaled.get_bytes_jpeg(JPEG_QUALITIES.at(-1)!);
-      if (!smallest || jpeg.byteLength < smallest.bytes.byteLength) {
-        smallest = { bytes: jpeg, mimeType: "image/jpeg", width, height };
+      if (!smallest || attempt.smallest.bytes.byteLength < smallest.bytes.byteLength) {
+        smallest = { ...attempt.smallest, width, height };
       }
-    } finally {
-      scaled.free();
+      const nextWidth = Math.floor(targetWidth * SCALE_STEP);
+      const nextHeight = Math.floor(targetHeight * SCALE_STEP);
+      if (Math.min(nextWidth, nextHeight) < MIN_DIMENSION) {
+        break;
+      }
+      targetWidth = nextWidth;
+      targetHeight = nextHeight;
     }
-    const nextWidth = Math.floor(targetWidth * SCALE_STEP);
-    const nextHeight = Math.floor(targetHeight * SCALE_STEP);
-    if (Math.min(nextWidth, nextHeight) < MIN_DIMENSION) {
-      break;
+  } finally {
+    // `decoded` belongs to the caller; every intermediate belongs to this loop.
+    if (source !== decoded) {
+      source.free();
     }
-    targetWidth = nextWidth;
-    targetHeight = nextHeight;
   }
   // The loop always runs at least once and only leaves via `break` after
   // recording a candidate.
@@ -366,7 +394,7 @@ export async function preprocessImage(options: PreprocessImageOptions): Promise<
   const dimensions = readImageDimensions(input);
   const overBudget = image.data.length > maxBytes;
 
-  if (isPassthrough(image.mimeType)) {
+  if (isPassthrough(image.mimeType, input)) {
     const oversizedFrame =
       dimensions !== null && (dimensions.width > maxDimension || dimensions.height > maxDimension);
     if (!oversizedFrame && !overBudget) {
@@ -378,8 +406,8 @@ export async function preprocessImage(options: PreprocessImageOptions): Promise<
     throw new ImageTooLargeError({
       reason:
         dimensions && oversizedFrame
-          ? `it is ${dimensions.width}x${dimensions.height}, over the ${maxDimension}px limit, and ${image.mimeType} cannot be resized without changing what it is`
-          : `its encoded payload is ${image.data.length} bytes, over the provider's byte budget, and ${image.mimeType} cannot be re-encoded without changing what it is`,
+          ? `it is ${dimensions.width}x${dimensions.height}, over the ${maxDimension}px limit, and an animated or vector image cannot be resized without changing what it is`
+          : `its encoded payload is ${image.data.length} bytes, over the provider's byte budget, and an animated or vector image cannot be re-encoded without changing what it is`,
       mimeType: image.mimeType,
       encodedBytes: image.data.length,
       dimensions,

@@ -184,6 +184,35 @@ function readBmpDimensions(bytes: Uint8Array): ImageDimensions | null {
   };
 }
 
+function isWebp(bytes: Uint8Array): boolean {
+  return (
+    startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && // RIFF
+    bytes.length >= 12 &&
+    bytes[8] === 0x57 && // W
+    bytes[9] === 0x45 && // E
+    bytes[10] === 0x42 && // B
+    bytes[11] === 0x50 // P
+  );
+}
+
+/** VP8X is the only WebP layout that can animate; bit 1 of its flags byte says whether it does. */
+function isAnimatedWebp(bytes: Uint8Array): boolean {
+  if (!isWebp(bytes) || bytes.length < 21) {
+    return false;
+  }
+  const chunkId = String.fromCharCode(bytes[12]!, bytes[13]!, bytes[14]!, bytes[15]!);
+  return chunkId === "VP8X" && (bytes[20]! & 0x02) !== 0;
+}
+
+/**
+ * True when the bytes are a GIF or an animated WebP, whatever MIME type the
+ * client put on them. Re-encoding either keeps only the first frame, so the
+ * decision not to re-encode has to follow the content rather than the label.
+ */
+export function isAnimatedContainer(bytes: Uint8Array): boolean {
+  return startsWith(bytes, [0x47, 0x49, 0x46, 0x38]) || isAnimatedWebp(bytes);
+}
+
 /**
  * The dimensions declared by the attachment's container, or null when the
  * bytes are not a container this function can read. A null is not a verdict on
@@ -195,14 +224,7 @@ export function readImageDimensions(bytes: Uint8Array): ImageDimensions | null {
     dimensions = readPngDimensions(bytes);
   } else if (startsWith(bytes, [0xff, 0xd8])) {
     dimensions = readJpegDimensions(bytes);
-  } else if (
-    startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && // RIFF
-    bytes.length >= 12 &&
-    bytes[8] === 0x57 && // W
-    bytes[9] === 0x45 && // E
-    bytes[10] === 0x42 && // B
-    bytes[11] === 0x50 // P
-  ) {
+  } else if (isWebp(bytes)) {
     dimensions = readWebpDimensions(bytes);
   } else if (startsWith(bytes, [0x47, 0x49, 0x46, 0x38])) {
     dimensions = readGifDimensions(bytes);

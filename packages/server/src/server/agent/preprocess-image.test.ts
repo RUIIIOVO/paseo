@@ -327,6 +327,22 @@ describe("resource ceilings", () => {
     expect(error).toMatchObject({ width: 4000, height: 2000, mimeType: "image/gif" });
   });
 
+  test("treats a GIF as a GIF whatever MIME type it is labelled with", async () => {
+    // Re-encoding would flatten an animation; the label is only the client's claim.
+    const image = { data: makeGifHeader(4000, 2000), mimeType: "image/png" };
+
+    const error = await preprocessImage({ image }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ImageTooLargeError);
+    expect(error).toMatchObject({ width: 4000, height: 2000 });
+  });
+
+  test("forwards a mislabelled GIF that is inside the limits untouched", async () => {
+    const image = { data: makeGifHeader(640, 480), mimeType: "image/png" };
+
+    expect(await preprocessImage({ image })).toBe(image);
+  });
+
   test("refuses a passthrough attachment over the provider's byte budget", async () => {
     const image = { data: makeGifHeader(100, 100, 4096), mimeType: "image/gif" };
 

@@ -8201,14 +8201,32 @@ export class Session {
       return;
     }
 
+    let images: Awaited<ReturnType<typeof preprocessImages>>;
+    try {
+      images = await preprocessImages({ images: msg.images, logger: this.sessionLogger });
+    } catch (error) {
+      // A refused attachment is the client's input, not an agent failure: it
+      // fails this send and leaves the agent and its history untouched.
+      this.sessionLogger.warn(
+        { err: error, agentId: resolved.agentId },
+        "session: rejected an image attachment before sending",
+      );
+      this.emit({
+        type: "send_agent_message_response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+        },
+      });
+      return;
+    }
+
     try {
       const agentId = resolved.agentId;
 
-      const prompt = buildAgentPrompt(
-        msg.text,
-        await preprocessImages({ images: msg.images, logger: this.sessionLogger }),
-        msg.attachments,
-      );
+      const prompt = buildAgentPrompt(msg.text, images, msg.attachments);
       this.sessionLogger.trace(
         {
           agentId,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import photon from "@silvia-odwyer/photon-node";
-import { readImageDimensions } from "./image-dimensions.js";
+import { isAnimatedContainer, readImageDimensions } from "./image-dimensions.js";
 
 function raster(width: number, height: number): photon.PhotonImage {
   return new photon.PhotonImage(new Uint8Array(width * height * 4).fill(0x80), width, height);
@@ -58,8 +58,9 @@ function losslessWebp(width: number, height: number): Uint8Array {
   return riff("VP8L", payload);
 }
 
-function extendedWebp(width: number, height: number): Uint8Array {
+function extendedWebp(width: number, height: number, flags = 0): Uint8Array {
   const payload = Buffer.alloc(10);
+  payload.writeUInt8(flags, 0);
   payload.writeUIntLE(width - 1, 4, 3);
   payload.writeUIntLE(height - 1, 7, 3);
   return riff("VP8X", payload);
@@ -140,4 +141,28 @@ describe("readImageDimensions", () => {
   test("returns null rather than a zero-sized image", () => {
     expect(readImageDimensions(gif(0, 0))).toBeNull();
   });
+});
+
+describe("isAnimatedContainer", () => {
+  test("recognises a GIF by its signature", () => {
+    expect(isAnimatedContainer(gif(640, 480))).toBe(true);
+  });
+
+  test("recognises an extended WebP with the animation flag set", () => {
+    expect(isAnimatedContainer(extendedWebp(640, 480, 0x02))).toBe(true);
+  });
+
+  const still: Array<{ name: string; bytes: Uint8Array }> = [
+    { name: "a PNG", bytes: png(64, 64) },
+    { name: "a JPEG", bytes: jpeg(64, 64) },
+    { name: "a lossy WebP", bytes: lossyWebp(64, 64) },
+    { name: "an extended WebP without the animation flag", bytes: extendedWebp(64, 64, 0x10) },
+    { name: "an empty payload", bytes: new Uint8Array(0) },
+  ];
+
+  for (const { name, bytes } of still) {
+    test(`returns false for ${name}`, () => {
+      expect(isAnimatedContainer(bytes)).toBe(false);
+    });
+  }
 });
