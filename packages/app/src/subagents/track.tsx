@@ -13,6 +13,7 @@ import {
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { Theme } from "@/styles/theme";
+import { useAgentFactsLine } from "@/panels/agent-facts-line";
 import { getPanelManifest } from "@/panels/panel-manifest";
 import type { SubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
@@ -35,6 +36,11 @@ export interface SubagentsTrackProps {
   rows: SubagentRow[];
   onOpenSubagent: (id: string) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
+  /**
+   * Whether opening this row shows it in a sheet. A sheet stacks over the list and uncovers it on
+   * close, so the list stays open; a tab replaces the list's pane, so choosing it ends the list.
+   */
+  opensInSheet: (row: SubagentRow) => boolean;
   onArchiveSubagent: (id: string) => void;
   onArchiveFinished?: () => void;
   archiveFinishedStatus?: ArchiveFinishedStatus;
@@ -63,6 +69,7 @@ export function SubagentsTrack({
   rows,
   onOpenSubagent,
   onOpenProviderSubagent,
+  opensInSheet,
   onArchiveSubagent,
   onArchiveFinished,
   archiveFinishedStatus = IDLE_ARCHIVE_FINISHED_STATUS,
@@ -103,6 +110,7 @@ export function SubagentsTrack({
           serverId={serverId}
           onOpenSubagent={onOpenSubagent}
           onOpenProviderSubagent={onOpenProviderSubagent}
+          opensInSheet={opensInSheet(row)}
           onArchiveSubagent={onArchiveSubagent}
           onDetachSubagent={onDetachSubagent}
         />
@@ -174,6 +182,7 @@ interface SubagentsTrackRowProps {
   row: SubagentRow;
   onOpenSubagent: (id: string) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
+  opensInSheet: boolean;
   onArchiveSubagent: (id: string) => void;
   onDetachSubagent?: (id: string) => void;
 }
@@ -183,6 +192,7 @@ function SubagentsTrackRow({
   row,
   onOpenSubagent,
   onOpenProviderSubagent,
+  opensInSheet,
   onArchiveSubagent,
   onDetachSubagent,
 }: SubagentsTrackRowProps): ReactElement {
@@ -210,14 +220,16 @@ function SubagentsTrackRow({
     ({ active }: { active: boolean }) => (
       <>
         <WorkspaceTabIcon presentation={presentation} backdrop={active ? "surface2" : "surface1"} />
-        <Text style={styles.rowLabel} numberOfLines={1}>
-          {displayLabel}
-        </Text>
-        {presentation.subtitle ? (
-          <Text style={styles.rowTrailing} numberOfLines={1}>
-            {presentation.subtitle}
+        <View style={styles.rowText}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {displayLabel}
           </Text>
-        ) : null}
+          {row.kind === "paseo" ? (
+            <PaseoSubagentFacts serverId={serverId} agentId={row.id} />
+          ) : (
+            <SubagentFacts rowId={row.id} text={presentation.subtitle} />
+          )}
+        </View>
         {row.kind === "paseo" ? (
           <SubagentRowActions
             rowId={row.id}
@@ -238,6 +250,7 @@ function SubagentsTrackRow({
       presentation,
       row.kind,
       row.id,
+      serverId,
     ],
   );
 
@@ -245,10 +258,26 @@ function SubagentsTrackRow({
     <ComposerTrackRow
       accessibilityLabel={displayLabel}
       testID={`subagents-track-row-${row.id}`}
+      closeOnSelect={!opensInSheet}
       onPress={handlePress}
     >
       {renderRow}
     </ComposerTrackRow>
+  );
+}
+
+/** The same facts line the agent's sheet shows when it opens without its composer. */
+function PaseoSubagentFacts({ serverId, agentId }: { serverId: string; agentId: string }) {
+  const text = useAgentFactsLine(serverId, agentId);
+  return <SubagentFacts rowId={agentId} text={text} />;
+}
+
+function SubagentFacts({ rowId, text }: { rowId: string; text: string | null }) {
+  if (!text) return null;
+  return (
+    <Text style={styles.rowFacts} numberOfLines={1} testID={`subagents-track-row-facts-${rowId}`}>
+      {text}
+    </Text>
   );
 }
 
@@ -350,9 +379,24 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     color: theme.colors.foreground,
   },
-  // Trailing metadata — provider context on a subagent row, progress on the archive row. No width
-  // cap: the panel's own ceiling bounds it. It shrinks twice as fast as the label, so a wordy
-  // provider subtitle gives way first instead of squeezing the thing that names the row.
+  // Title over facts. The facts sit under the title rather than beside it, so a long task name
+  // keeps the row's full width and neither line truncates the other.
+  rowText: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: "auto",
+    minWidth: 0,
+  },
+  rowTitle: {
+    fontSize: theme.fontSize.base,
+    color: theme.colors.foreground,
+  },
+  rowFacts: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
+  },
+  // Progress on the archive row. It shrinks twice as fast as the label, so a long retry count
+  // gives way first instead of squeezing the thing that names the row.
   rowTrailing: {
     flexShrink: 2,
     minWidth: 0,
