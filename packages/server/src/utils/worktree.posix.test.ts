@@ -21,7 +21,13 @@ import {
   type WorktreeConfig,
 } from "./worktree";
 import type { PaseoConfig } from "@getpaseo/protocol/paseo-config-schema";
-import { getPaseoWorktreeMetadataPath, readPaseoWorktreeMetadata } from "./worktree-metadata.js";
+import {
+  getPaseoWorktreeMetadataPath,
+  readPaseoWorktreeMetadata,
+  writePaseoWorktreeMetadata,
+  writePaseoWorktreeRuntimeMetadata,
+  writePaseoWorktreeFirstAgentBranchAutoNameMetadata,
+} from "./worktree-metadata.js";
 import {
   getCheckoutDiff,
   getCheckoutStatus,
@@ -48,8 +54,8 @@ import { delimiter, dirname, join } from "path";
 import { tmpdir } from "os";
 import net from "node:net";
 
-function loadConfigForTest(repoRoot: string): PaseoConfig | null {
-  const result = readPaseoConfig(repoRoot);
+async function loadConfigForTest(repoRoot: string): Promise<PaseoConfig | null> {
+  const result = await readPaseoConfig(repoRoot);
   return result.ok ? result.config : null;
 }
 
@@ -58,7 +64,7 @@ interface LegacyCreateWorktreeTestOptions {
   cwd: string;
   baseBranch: string;
   worktreeSlug: string;
-  runSetup?: boolean;
+
   paseoHome?: string;
   worktreesRoot?: string;
 }
@@ -78,7 +84,7 @@ function createLegacyWorktreeForTest(
       baseBranch: options.baseBranch,
       branchName: options.branchName,
     },
-    runSetup: options.runSetup ?? true,
+
     paseoHome: options.paseoHome,
     worktreesRoot: options.worktreesRoot,
   });
@@ -125,7 +131,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       expect(result.worktreePath).toBe(join(paseoHome, "worktrees", projectHash, "hello-world"));
       expect(existsSync(result.worktreePath)).toBe(true);
       expect(existsSync(join(result.worktreePath, "file.txt"))).toBe(true);
-      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      const metadataPath = await getPaseoWorktreeMetadataPath(result.worktreePath);
       expect(existsSync(metadataPath)).toBe(true);
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       expect(metadata).toMatchObject({
@@ -239,7 +245,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "my-feature",
         source: { kind: "branch-off", baseBranch: "main", branchName: "feature/x" },
-        runSetup: true,
+
         paseoHome,
       });
 
@@ -256,7 +262,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: result.worktreePath,
       });
 
-      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      const metadataPath = await getPaseoWorktreeMetadataPath(result.worktreePath);
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       expect(metadata).toMatchObject({
         version: 1,
@@ -282,7 +288,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           cwd: repoDir,
           worktreeSlug: "existing-feature",
           source: { kind: "checkout-branch", branchName: "feature/existing" },
-          runSetup: false,
+
           paseoHome,
         });
         const status = await getCheckoutStatus(result.worktreePath, { paseoHome });
@@ -304,7 +310,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "dev-worktree",
         source: { kind: "checkout-branch", branchName: "dev" },
-        runSetup: true,
+
         paseoHome,
       });
 
@@ -319,7 +325,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       // baseRefName must be the repo's default branch, not the checked-out branch
       // itself — otherwise the diff panel compares the branch against itself and
       // always shows no changes.
-      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      const metadataPath = await getPaseoWorktreeMetadataPath(result.worktreePath);
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       expect(metadata).toMatchObject({
         version: 1,
@@ -346,7 +352,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "stale-default",
         source: { kind: "checkout-branch", branchName: "feature/stale-default" },
-        runSetup: false,
+
         paseoHome,
       });
       const diff = await getCheckoutDiff(created.worktreePath, { mode: "base" }, { paseoHome });
@@ -365,12 +371,12 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "feature-x-worktree",
         source: { kind: "checkout-branch", branchName: "feature-x" },
-        runSetup: true,
+
         paseoHome,
       });
 
       expect(existsSync(result.worktreePath)).toBe(true);
-      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      const metadataPath = await getPaseoWorktreeMetadataPath(result.worktreePath);
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       expect(metadata).toMatchObject({ version: 1, baseRefName: "develop" });
     });
@@ -382,7 +388,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "release-worktree",
         source: { kind: "checkout-branch", branchName: "release/1.1.15" },
-        runSetup: true,
+
         paseoHome,
       });
 
@@ -400,19 +406,21 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "dev-worktree",
         source: { kind: "checkout-branch", branchName: "main" },
-        runSetup: true,
+
         paseoHome,
       });
 
       expect(result.branchName).toBe("main-1");
       expect(existsSync(result.worktreePath)).toBe(true);
-      expect(readPaseoWorktreeMetadata(result.worktreePath)?.changeRequestLookupTarget).toEqual({
+      expect(
+        (await readPaseoWorktreeMetadata(result.worktreePath))?.changeRequestLookupTarget,
+      ).toEqual({
         headRef: "main-1",
         localBranchName: "main-1",
       });
     });
 
-    it("fetches a GitHub PR branch, checks it out, writes metadata, and runs setup", async () => {
+    it("fetches a GitHub PR branch and writes metadata without executing setup", async () => {
       const remoteDir = join(tempDir, "remote.git");
       const remoteCloneDir = join(tempDir, "remote-clone");
       execFileSync("git", ["clone", "--bare", repoDir, remoteDir]);
@@ -446,12 +454,12 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           headRef: "user/feature",
           baseRefName: "main",
         },
-        runSetup: true,
+
         paseoHome,
       });
 
       expect(readFileSync(join(result.worktreePath, "file.txt"), "utf8")).toBe("from-pr\n");
-      expect(readFileSync(join(result.worktreePath, "setup.log"), "utf8")).toBe("setup ran\n");
+      expect(existsSync(join(result.worktreePath, "setup.log"))).toBe(false);
       const currentBranch = execFileSync("git", ["branch", "--show-current"], {
         cwd: result.worktreePath,
       })
@@ -459,7 +467,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         .trim();
       expect(currentBranch).toBe("user/feature");
 
-      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      const metadataPath = await getPaseoWorktreeMetadataPath(result.worktreePath);
       const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
       expect(metadata).toMatchObject({ baseRefName: "main" });
     });
@@ -494,7 +502,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           headRef: "Feature.X",
           baseRefName: "main",
         },
-        runSetup: true,
+
         paseoHome,
       });
 
@@ -540,7 +548,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "refs/heads/main",
         worktreeSlug: "prefer-local-feature",
-        runSetup: false,
+
         paseoHome,
       });
       const originResult = await createLegacyWorktreeForTest({
@@ -548,7 +556,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "refs/remotes/origin/main",
         worktreeSlug: "prefer-origin-feature",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -566,7 +574,9 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         "from-origin\n",
       );
       expect(
-        JSON.parse(readFileSync(getPaseoWorktreeMetadataPath(originResult.worktreePath), "utf8")),
+        JSON.parse(
+          readFileSync(await getPaseoWorktreeMetadataPath(originResult.worktreePath), "utf8"),
+        ),
       ).toMatchObject({ baseRefName: "main" });
     });
 
@@ -598,7 +608,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "refs/remotes/upstream/main",
         worktreeSlug: "fork-base-feature",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -607,7 +617,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       // to the commit the worktree was cut from: "main" resolves local-first, which here is
       // a different commit than the fork's upstream.
       expect(
-        JSON.parse(readFileSync(getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
+        JSON.parse(readFileSync(await getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
       ).toMatchObject({ baseRefName: "main", baseRef: "refs/remotes/upstream/main" });
 
       // An untouched child must report no work of its own. Comparing against the wrong base
@@ -689,12 +699,12 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "refs/remotes/upstream/release+hotfix",
         worktreeSlug: "release-hotfix-feature",
-        runSetup: false,
+
         paseoHome,
       });
 
       expect(
-        JSON.parse(readFileSync(getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
+        JSON.parse(readFileSync(await getPaseoWorktreeMetadataPath(result.worktreePath), "utf8")),
       ).toMatchObject({
         baseRefName: "release+hotfix",
         baseRef: "refs/remotes/upstream/release+hotfix",
@@ -717,7 +727,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "main",
         worktreeSlug: "prefer-local-fallback-feature",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -731,7 +741,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           cwd: repoDir,
           baseBranch: "does-not-exist",
           worktreeSlug: "missing-base-feature",
-          runSetup: false,
+
           paseoHome,
         }),
       ).rejects.toThrow("Base branch not found: does-not-exist");
@@ -755,7 +765,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           cwd: repoDir,
           worktreeSlug: "invalid-existing-branch",
           source: { kind: "checkout-branch", branchName: "bad..name" },
-          runSetup: true,
+
           paseoHome,
         });
       } catch (error) {
@@ -773,7 +783,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           cwd: repoDir,
           worktreeSlug: "invalid-option-like-branch",
           source: { kind: "checkout-branch", branchName: "-bad" },
-          runSetup: true,
+
           paseoHome,
         });
       } catch (error) {
@@ -853,6 +863,10 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
       expect(existsSync(result.worktreePath)).toBe(true);
 
+      await runWorktreeSetupCommands({
+        worktreePath: result.worktreePath,
+        branchName: result.branchName,
+      });
       // Verify setup ran and env vars were available
       const setupLog = readFileSync(join(result.worktreePath, "setup.log"), "utf8");
       expect(setupLog).toContain(`source=${repoDir}`);
@@ -886,7 +900,11 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         paseoHome,
       });
 
-      expect(getWorktreeSetupCommands(result.worktreePath)).toEqual([
+      await runWorktreeSetupCommands({
+        worktreePath: result.worktreePath,
+        branchName: result.branchName,
+      });
+      expect(await getWorktreeSetupCommands(result.worktreePath)).toEqual([
         'greeting="hello from string setup"\necho "$greeting" > setup.log',
       ]);
       expect(readFileSync(join(result.worktreePath, "setup.log"), "utf8").trim()).toBe(
@@ -926,7 +944,6 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         await runWorktreeSetupCommands({
           worktreePath: repoDir,
           branchName: "main",
-          cleanupOnFailure: false,
           runtimeEnv: {
             PASEO_SOURCE_CHECKOUT_PATH: repoDir,
             PASEO_ROOT_PATH: repoDir,
@@ -956,7 +973,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       expect(readFileSync(join(repoDir, "setup-path.log"), "utf8").trim()).toBe("shim:ok");
     });
 
-    it("treats blank lifecycle strings as empty", () => {
+    it("treats blank lifecycle strings as empty", async () => {
       writeFileSync(
         join(repoDir, "paseo.json"),
         JSON.stringify({
@@ -967,11 +984,11 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getWorktreeSetupCommands(repoDir)).toEqual([]);
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([]);
+      expect(await getWorktreeSetupCommands(repoDir)).toEqual([]);
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([]);
     });
 
-    it("filters non-string and blank entries from lifecycle arrays", () => {
+    it("filters non-string and blank entries from lifecycle arrays", async () => {
       writeFileSync(
         join(repoDir, "paseo.json"),
         JSON.stringify({
@@ -992,17 +1009,17 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getWorktreeSetupCommands(repoDir)).toEqual([
+      expect(await getWorktreeSetupCommands(repoDir)).toEqual([
         'echo "first" > setup-array.log',
         'echo "second" >> setup-array.log',
       ]);
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([
         'echo "first" > "$PASEO_SOURCE_CHECKOUT_PATH/teardown-array.log"',
         'echo "second" >> "$PASEO_SOURCE_CHECKOUT_PATH/teardown-array.log"',
       ]);
     });
 
-    it("does not run setup commands when runSetup=false", async () => {
+    it("only provisions the worktree without executing setup", async () => {
       const paseoConfig = {
         worktree: {
           setup: ['echo "setup ran" > setup.log'],
@@ -1019,7 +1036,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "main",
         worktreeSlug: "no-setup-test",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1043,7 +1060,6 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       const results = await runWorktreeSetupCommands({
         worktreePath: repoDir,
         branchName: "main",
-        cleanupOnFailure: false,
         onEvent: (event) => {
           progressEvents.push(event);
         },
@@ -1061,7 +1077,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "main",
         worktreeSlug: "runtime-env-port-reuse",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1083,7 +1099,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         baseBranch: "main",
         worktreeSlug: "runtime-env-port-conflict",
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1117,35 +1133,6 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       });
     });
 
-    it("cleans up worktree if setup command fails", async () => {
-      // Create paseo.json with failing setup command
-      const paseoConfig = {
-        worktree: {
-          setup: ["exit 1"],
-        },
-      };
-      writeFileSync(join(repoDir, "paseo.json"), JSON.stringify(paseoConfig));
-      execFileSync("git", ["add", "paseo.json"], { cwd: repoDir });
-      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "add paseo.json"], {
-        cwd: repoDir,
-      });
-
-      const expectedWorktreePath = join(paseoHome, "worktrees", "test-repo", "fail-test");
-
-      await expect(
-        createLegacyWorktreeForTest({
-          branchName: "main",
-          cwd: repoDir,
-          baseBranch: "main",
-          worktreeSlug: "fail-test",
-          paseoHome,
-        }),
-      ).rejects.toThrow("Worktree setup command failed");
-
-      // Verify worktree was cleaned up
-      expect(existsSync(expectedWorktreePath)).toBe(false);
-    });
-
     it("reads worktree terminal specs from paseo.json with optional name", async () => {
       const paseoConfig = {
         worktree: {
@@ -1157,7 +1144,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       };
       writeFileSync(join(repoDir, "paseo.json"), JSON.stringify(paseoConfig));
 
-      expect(getWorktreeTerminalSpecs(repoDir)).toEqual([
+      expect(await getWorktreeTerminalSpecs(repoDir)).toEqual([
         { name: "Dev Server", command: "npm run dev" },
         { command: "cd packages/app && npm run dev" },
       ]);
@@ -1177,7 +1164,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       };
       writeFileSync(join(repoDir, "paseo.json"), JSON.stringify(paseoConfig));
 
-      expect(getWorktreeTerminalSpecs(repoDir)).toEqual([
+      expect(await getWorktreeTerminalSpecs(repoDir)).toEqual([
         { name: "Watch", command: "npm run watch" },
         { command: "npm run test" },
       ]);
@@ -1195,7 +1182,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
+      const scriptConfigs = getScriptConfigs(await loadConfigForTest(repoDir));
       const typecheck = scriptConfigs.get("typecheck");
 
       expect(typecheck).toEqual({
@@ -1219,7 +1206,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
+      const scriptConfigs = getScriptConfigs(await loadConfigForTest(repoDir));
       const server = scriptConfigs.get("server");
 
       expect(server).toEqual({
@@ -1259,7 +1246,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getScriptConfigs(loadConfigForTest(repoDir))).toEqual(
+      expect(getScriptConfigs(await loadConfigForTest(repoDir))).toEqual(
         new Map([
           ["valid", { command: "npm run valid" }],
           ["invalidType", { command: "npm run worker" }],
@@ -1278,7 +1265,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "seed-uncommitted",
         source: { kind: "branch-off", baseBranch: "main", branchName: "feature/seed" },
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1324,7 +1311,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           baseBranch: "origin/main",
           branchName: "feature/upstream-config",
         },
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1364,7 +1351,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
           baseBranch: "symlink-config",
           branchName: "feature/symlink-config",
         },
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1385,7 +1372,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         cwd: repoDir,
         worktreeSlug: "no-config",
         source: { kind: "branch-off", baseBranch: "main", branchName: "feature/no-config" },
-        runSetup: false,
+
         paseoHome,
       });
 
@@ -1570,7 +1557,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
       await deletePaseoWorktree({ cwd: repoDir, worktreePath: created.worktreePath, paseoHome });
 
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([
         'cleanup_message="teardown string"\necho "$cleanup_message" > "$PASEO_SOURCE_CHECKOUT_PATH/teardown.log"',
       ]);
       expect(readFileSync(join(repoDir, "teardown.log"), "utf8").trim()).toBe("teardown string");
@@ -1638,5 +1625,106 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       expect(existsSync(created.worktreePath)).toBe(true);
       expect(existsSync(join(repoDir, "teardown-start.log"))).toBe(true);
     });
+  });
+});
+
+describe.skipIf(isPlatform("win32"))("async worktree metadata", () => {
+  it("serializes metadata mutations per worktree while another worktree progresses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "worktree-metadata-order-"));
+    const first = join(root, "first");
+    const second = join(root, "second");
+    mkdirSync(join(first, ".git"), { recursive: true });
+    mkdirSync(join(second, ".git"), { recursive: true });
+    try {
+      await writePaseoWorktreeMetadata(first, { baseRefName: "main" });
+      await writePaseoWorktreeMetadata(second, { baseRefName: "release" });
+      const order: string[] = [];
+      const runtime = writePaseoWorktreeRuntimeMetadata(first, { worktreePort: 4101 }).then(() =>
+        order.push("first-runtime"),
+      );
+      const unrelated = writePaseoWorktreeRuntimeMetadata(second, { worktreePort: 4102 }).then(() =>
+        order.push("second-runtime"),
+      );
+      const naming = writePaseoWorktreeFirstAgentBranchAutoNameMetadata(first, {
+        placeholderBranchName: "topic",
+      }).then(() => order.push("first-naming"));
+      // A read issued while writes are pending observes their completed snapshot.
+      const snapshot = readPaseoWorktreeMetadata(first);
+      await Promise.all([runtime, unrelated, naming]);
+      expect(order.indexOf("first-runtime")).toBeLessThan(order.indexOf("first-naming"));
+      expect(await snapshot).toMatchObject({
+        baseRefName: "main",
+        runtime: { worktreePort: 4101 },
+        firstAgentBranchAutoName: { status: "pending", placeholderBranchName: "topic" },
+      });
+      expect(await readPaseoWorktreeMetadata(second)).toMatchObject({
+        baseRefName: "release",
+        runtime: { worktreePort: 4102 },
+      });
+      const alias = join(root, "first-alias");
+      symlinkSync(first, alias, "dir");
+      await Promise.all([
+        writePaseoWorktreeRuntimeMetadata(first, { worktreePort: 4103 }),
+        writePaseoWorktreeFirstAgentBranchAutoNameMetadata(alias, {
+          placeholderBranchName: "renamed",
+        }),
+      ]);
+      expect(await readPaseoWorktreeMetadata(first)).toMatchObject({
+        runtime: { worktreePort: 4103 },
+        firstAgentBranchAutoName: { placeholderBranchName: "renamed" },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a queued metadata mutation cannot recreate an archived Git directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "worktree-metadata-archive-"));
+    mkdirSync(join(root, ".git"));
+    try {
+      await writePaseoWorktreeMetadata(root, { baseRefName: "main" });
+      const pending = writePaseoWorktreeRuntimeMetadata(root, { worktreePort: 4101 });
+      // The mutation is queued in a microtask, so archive wins this ordering.
+      rmSync(join(root, ".git"), { recursive: true });
+      await expect(pending).rejects.toThrow("Not a git repository");
+      expect(existsSync(join(root, ".git"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes a removed worktree under a symlinked ownership root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "worktree-ownership-alias-"));
+    const actual = join(root, "actual");
+    const alias = join(root, "worktrees");
+    mkdirSync(actual);
+    symlinkSync(actual, alias, "dir");
+    try {
+      const cwd = join(alias, "project", "removed");
+      expect(
+        await isPaseoOwnedWorktreeCwd(cwd, { worktreesRoot: alias, knownGitCommonDir: null }),
+      ).toMatchObject({ allowed: true, worktreePath: cwd });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized metadata and named pipes without reading them whole", async () => {
+    const root = mkdtempSync(join(tmpdir(), "worktree-metadata-admission-"));
+    mkdirSync(join(root, ".git", "paseo"), { recursive: true });
+    try {
+      const path = await getPaseoWorktreeMetadataPath(root);
+      writeFileSync(path, JSON.stringify({ version: 1, baseRefName: "x".repeat(64 * 1024) }));
+      await expect(readPaseoWorktreeMetadata(root)).rejects.toThrow(
+        "Invalid Paseo worktree metadata file",
+      );
+      rmSync(path);
+      execFileSync("mkfifo", [path]);
+      await expect(readPaseoWorktreeMetadata(root)).rejects.toThrow(
+        "Invalid Paseo worktree metadata file",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
